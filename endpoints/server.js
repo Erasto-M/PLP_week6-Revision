@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
 const app = express();
+const secretKey = process.env.SECRET_KEY;
 
 // middleware 
 app.use(cors());
@@ -56,7 +57,27 @@ const initdatabase = () => {
             }
             console.log("Users table created successfully");
         });
-
+        const createExpensesTable = `
+        CREATE TABLE IF NOT EXISTS Categories (
+            expense_id INT PRIMARY KEY AUTO_INCREMENT,
+            user_id INT,
+            expenseName VARCHAR(255) NOT NULL,
+            category VARCHAR(200) NOT NULL,
+            amount DECIMAL(10,2) NOT NULL,
+            date DATE NOT NULL, 
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES Users(user_id)
+        )
+    `;
+    pool.query(createExpensesTable, (err) => {
+        if (err) {
+            console.error("Error creating Categories table", err);
+            return;
+        }
+        console.log("Expenses table created successfully");
+    })
+        //categories
         const createCategoriesTable = `
             CREATE TABLE IF NOT EXISTS Categories (
                 category_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -77,6 +98,21 @@ const initdatabase = () => {
         });
     });}
 
+//verify token
+//authentication token
+const verifyToken = (req, res , next)=>{
+    const authHeader = req.headers['authorization'];
+    if(!authHeader) return res.status(401).json({message: 'Access Denied'});
+    const token = authHeader.split(' ')[1];
+    if(!token) return res.status(401).json('access Denied');
+
+    jwt.verify(token , secretKey,(err, user)=>{
+        if(err) return res.status(403).json('Invalid Token');
+        req.user_id = user.id;
+        next();
+    })
+};
+
 //api endpoint to register user
 app.post("/endpoints/auth/register", (req, res)=>{
     try{
@@ -89,8 +125,10 @@ app.post("/endpoints/auth/register", (req, res)=>{
             if(err) return res.status(500).json({message: "Something went wrong user fetching", error: err.message});
             if(result.length>0) return res.status(409).json({message: "Email already in use"});
             const createUser = 'INSERT INTO Users (username, email, password) VALUES (?,?,?)';
+            const hashingTimes = bcrypt.genSaltSync(10);
+            const hashedPassword = bcrypt.hashSync(password, hashingTimes);
 
-            pool.query(createUser, [username, email, password],  (err, result)=>{
+            pool.query(createUser, [username, email, hashedPassword],  (err, result)=>{
                 if(err) return res.status(500).json({message: "Something went wrong during creation", error: err.message});
                 return res.status(201).json({message: "user created successfully", result: result});
     });
@@ -101,7 +139,58 @@ app.post("/endpoints/auth/register", (req, res)=>{
     }
 });
 
+//login endpoint
+app.post('/endpoints/auth/login', (req, res)=>{
+    try{
+        const {email, password} = req.body;
+        if(!email || !password){
+            return res.status(400).json({message: "All fields are required"});
+        }
+        const userDetails = `SELECT * FROM Users    WHERE email = ?`;
+        pool.query(userDetails, [email], (err, result)=>{
+            if(err) return res.status(500).json({message: "Something went wrong", error: err.message});
+            if(result.length === 0) return res.status(404).json({message: "User not found"});
+            const isPasswordValid = bcrypt.compareSync(password, result[0].password);
+            if(!isPasswordValid){
+                return res.status(400).json({message: "Incorrect email or password"});
+            }
+           
+            const userData = result[0];
+           const token =  jwt.sign({
+                id: userData.id,
+                username: userData.username,
+            },
+            secretKey,
+            {expiresIn: '1h'},
+           
+        )
+         return res.status(201).json({message: "Login succesfull", userToken: token});
+        });
+    }catch(e){
+        return res.status(500).json({message: "Internal server error " , error: err.message});
+    }
+});
+
+//endpoint for adding an expense
+app.post('/endpoints/expenses/addexpense',verifyToken, (req, res)=>{
+try{
+    const  {expenseName , category , amount , date} = req.body;
+    if(!expenseName || !category ||!amount || !date){
+        return res.status(400).json({message: "All fields are required"});
+    }
+    const createExpense = `INSERT INTO Expenses (user_id,expenseName, category, amount , date) VALUES (?,?,?,?,?)`;
+    const values = [req.user_id,expenseName, category, amount, date];
+    pool.query(createExpense, values, (err, result)=>{
+        if(err)  return res.status(500).json({message: "Something went wrong" , error: err.message}); 
+       return res.status(201).json({message: "Expense Added Successfully", data: result});
+    });
+}catch(e){
+    return res.status(500).json({message: "Internal server error " , error: err.message}); 
+}
+});
+
 //app listening port
 app.listen(5000, (err)=>{
     console.log("Server running on port 5000");
 });
+
